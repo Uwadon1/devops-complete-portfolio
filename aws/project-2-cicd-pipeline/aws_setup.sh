@@ -86,14 +86,26 @@ EXECUTION_ROLE_ARN=$(aws iam get-role \
 
 # 3. Create ECS cluster
 echo "🏗️ Creating ECS cluster..."
-if aws ecs describe-clusters --clusters $CLUSTER_NAME --region $AWS_REGION >/dev/null 2>&1; then
-    echo "✅ ECS cluster already exists"
+
+CLUSTER_STATUS=$(aws ecs describe-clusters \
+  --clusters "$CLUSTER_NAME" \
+  --region "$AWS_REGION" \
+  --query "clusters[0].status" \
+  --output text 2>/dev/null)
+
+if [ "$CLUSTER_STATUS" == "ACTIVE" ]; then
+    echo "✅ ECS cluster already exists and is ACTIVE"
+elif [ "$CLUSTER_STATUS" == "INACTIVE" ]; then
+    echo "⚠️ ECS cluster exists but is INACTIVE. Deleting and recreating..."
+    aws ecs delete-cluster --cluster "$CLUSTER_NAME" --region "$AWS_REGION"
+    aws ecs create-cluster --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION"
+    echo "✅ ECS cluster recreated"
 else
-    aws ecs create-cluster \
-        --cluster-name $CLUSTER_NAME \
-        --region $AWS_REGION
+    echo "🆕 ECS cluster not found. Creating..."
+    aws ecs create-cluster --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION"
     echo "✅ ECS cluster created"
 fi
+
 
 # 4. Get VPC and subnet information
 echo "🌐 Getting VPC information..."
