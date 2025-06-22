@@ -87,17 +87,24 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
           echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
   
-      
-      
+    
       - name: Download task definition
         run: |
           set -e
           echo "Using task definition: $ECS_TASK_DEFINITION"
+          if [ -z "$ECS_TASK_DEFINITION" ]; then
+            echo "ECS_TASK_DEFINITION environment variable is not set."
+            exit 1
+          fi
           aws ecs describe-task-definition \
             --task-definition $ECS_TASK_DEFINITION \
             --query taskDefinition > task-definition.json
+          if [ ! -f "task-definition.json" ]; then
+            echo "Failed to create task-definition.json"
+            exit 1
+          fi
           ls -lh task-definition.json
-    
+
     
       - name: Fill in the new image ID in the Amazon ECS task definition
         id: task-def
