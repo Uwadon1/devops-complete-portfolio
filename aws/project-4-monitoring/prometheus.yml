@@ -1,0 +1,60 @@
+# This tells Prometheus what to monitor
+
+# prometheus.yml - Prometheus configuration
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - "alert_rules.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - alertmanager:9093
+
+scrape_configs:
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # System metrics
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+
+  # Container metrics
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']
+
+  # Your web app (when running locally)
+  - job_name: 'my-webapp-local'
+    static_configs:
+      - targets: ['host.docker.internal:3001']
+    metrics_path: '/metrics'
+    scrape_interval: 5s
+
+  # Your web app on Kubernetes (if running)
+  - job_name: 'my-webapp-k8s'
+    kubernetes_sd_configs:
+      - role: pod
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        action: keep
+        regex: my-webapp
+      - source_labels: [__meta_kubernetes_pod_container_port_number]
+        action: keep
+        regex: 3001
+
+  # AWS ECS tasks (if still using ECS)
+  - job_name: 'aws-ecs-tasks'
+    ec2_sd_configs:
+      - region: us-east-1
+        port: 3001
+        filters:
+          - name: tag:aws:ecs:cluster-name
+            values: ['webapp-*']
