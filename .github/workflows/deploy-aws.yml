@@ -1,16 +1,17 @@
 name: Deploy to AWS ECS
-
+    
 on:
   push:
     branches: [main]
     paths:
-      - 'project-2/**'  # Only run when project-2 changes
+      - 'project-2-cicd-pipeline/**'  # ✅ Fix: match actual folder
   pull_request:
     branches: [main]
     paths:
       - 'project-2-cicd-pipeline/**'
-  workflow_dispatch:  # Manual triggering
+  workflow_dispatch:
 
+  
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
   ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
