@@ -87,14 +87,16 @@ jobs:
           echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
 
+
       - name: Download task definition
         run: |
           set -e
           echo "Using task definition: $ECS_TASK_DEFINITION"
           aws ecs describe-task-definition \
             --task-definition $ECS_TASK_DEFINITION \
-            --query taskDefinition > task-definition.json
+            --query taskDefinition > deploy/task-definition.json || (echo "Failed to download task definition!" && exit 1)
           ls -lh task-definition.json
+    
           
       - name: Debug current directory
         run: |
