@@ -9,7 +9,7 @@ on:
     branches: [main]
     paths:
       - 'aws/project-2-cicd-pipeline/**'
-  workflow_dispatch:  # Manual triggering
+  workflow_dispatch:
 
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
@@ -25,134 +25,121 @@ jobs:
 
     defaults:
       run:
-        working-directory: ./aws/project-2-cicd-pipeline  # Corrected to match your structure
+        working-directory: ./aws/project-2-cicd-pipeline
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '18'
-        cache: 'npm'
-        cache-dependency-path: aws/project-2-cicd-pipeline/package-lock.json
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: aws/project-2-cicd-pipeline/package-lock.json
 
-      
+      - name: Install dependencies
+        run: npm ci
 
-    - name: Install dependencies
-      run: npm ci
+      - name: Run tests
+        run: npm test
 
-    - name: Run tests
-      run: npm test
-
-    - name: Test Docker build
-      run: |
-        docker build -t test-build .
-        echo "Docker build successful!"
+      - name: Test Docker build
+        run: |
+          docker build -t test-build .
+          echo "Docker build successful!"
 
   deploy:
     name: Deploy to AWS ECS
     runs-on: ubuntu-latest
     needs: test
-    if: github.ref == 'refs/heads/main'  # Only deploy from main branch
+    if: github.ref == 'refs/heads/main'
 
     defaults:
       run:
-        working-directory: ./aws/project-2-cicd-pipeline  # This should be the build context for your Dockerfile
+        working-directory: ./aws/project-2-cicd-pipeline
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
 
-    - name: Login to Amazon ECR
-      id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v2
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Build, tag, and push image to Amazon ECR
-      id: build-image
-      env:
-        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        IMAGE_TAG: ${{ github.sha }}
-      run: |
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
-
-    
-    - name: Download task definition
-      run: |
-        set -e
-        echo "ECS_TASK_DEFINITION is: $ECS_TASK_DEFINITION"
-        aws ecs describe-task-definition \
-          --task-definition $ECS_TASK_DEFINITION \
-          --query taskDefinition > task-definition.json
-
-        - name: Debug: List files and show task definition
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
         run: |
-        ls -l
-        cat task-definition.json || echo "task-definition.json not found"
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
-        - name: Fill in the new image ID in the Amazon ECS task definition
-  id: task-def
-  uses: aws-actions/amazon-ecs-render-task-definition@v1
-  with:
-    task-definition: aws/project-2-cicd-pipeline/task-definition.json
-    container-name: webapp
-    image: ${{ steps.build-image.outputs.image }}
+      - name: Download task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition $ECS_TASK_DEFINITION \
+            --query taskDefinition > task-definition.json
 
-    
+      - name: Fill in the new image ID in the Amazon ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: webapp
+          image: ${{ steps.build-image.outputs.image }}
 
-    - name: Deploy Amazon ECS task definition
-      uses: aws-actions/amazon-ecs-deploy-task-definition@v1
-      with:
-        task-definition: ${{ steps.task-def.outputs.task-definition }}
-        service: ${{ env.ECS_SERVICE }}
-        cluster: ${{ env.ECS_CLUSTER }}
-        wait-for-service-stability: true
+      - name: Deploy Amazon ECS task definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
 
-    - name: Get Application URL
-      run: |
-        echo "Waiting for service to stabilize..."
-        sleep 30
+      - name: Get Application URL
+        run: |
+          echo "Waiting for service to stabilize..."
+          sleep 30
 
-        TASK_ARN=$(aws ecs list-tasks \
-          --cluster $ECS_CLUSTER \
-          --service-name $ECS_SERVICE \
-          --query 'taskArns[0]' \
-          --output text)
-
-        if [ "$TASK_ARN" != "None" ] && [ "$TASK_ARN" != "" ]; then
-          NETWORK_INTERFACE_ID=$(aws ecs describe-tasks \
+          TASK_ARN=$(aws ecs list-tasks \
             --cluster $ECS_CLUSTER \
-            --tasks $TASK_ARN \
-            --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' \
+            --service-name $ECS_SERVICE \
+            --query 'taskArns[0]' \
             --output text)
 
-          PUBLIC_IP=$(aws ec2 describe-network-interfaces \
-            --network-interface-ids $NETWORK_INTERFACE_ID \
-            --query 'NetworkInterfaces[0].Association.PublicIp' \
-            --output text)
+          if [ "$TASK_ARN" != "None" ] && [ "$TASK_ARN" != "" ]; then
+            NETWORK_INTERFACE_ID=$(aws ecs describe-tasks \
+              --cluster $ECS_CLUSTER \
+              --tasks $TASK_ARN \
+              --query 'tasks[0].attachments[0].details[?name==`networkInterfaceId`].value' \
+              --output text)
 
-          echo ""
-          echo "🚀 Deployment successful!"
-          echo "📱 Your app is live at: http://$PUBLIC_IP:3001"
-          echo "🏥 Health check: http://$PUBLIC_IP:3001/health"
-          echo "📊 API endpoint: http://$PUBLIC_IP:3001/api/info"
-          echo ""
-          echo "📋 AWS Console Links:"
-          echo "ECS Service: https://console.aws.amazon.com/ecs/home?region=$AWS_REGION#/clusters/$ECS_CLUSTER/services/$ECS_SERVICE"
-          echo "CloudWatch Logs: https://console.aws.amazon.com/cloudwatch/home?region=$AWS_REGION#logsV2:log-groups/log-group/%2Fecs%2F$ECS_TASK_DEFINITION"
-          echo ""
-        else
-          echo "❌ Could not get task information. Check ECS console for details."
-        fi
+            PUBLIC_IP=$(aws ec2 describe-network-interfaces \
+              --network-interface-ids $NETWORK_INTERFACE_ID \
+              --query 'NetworkInterfaces[0].Association.PublicIp' \
+              --output text)
+
+            echo ""
+            echo "🚀 Deployment successful!"
+            echo "📱 Your app is live at: http://$PUBLIC_IP:3001"
+            echo "🏥 Health check: http://$PUBLIC_IP:3001/health"
+            echo "📊 API endpoint: http://$PUBLIC_IP:3001/api/info"
+            echo ""
+            echo "📋 AWS Console Links:"
+            echo "ECS Service: https://console.aws.amazon.com/ecs/home?region=$AWS_REGION#/clusters/$ECS_CLUSTER/services/$ECS_SERVICE"
+            echo "CloudWatch Logs: https://console.aws.amazon.com/cloudwatch/home?region=$AWS_REGION#logsV2:log-groups/log-group/%2Fecs%2F$ECS_TASK_DEFINITION"
+          else
+            echo "❌ Could not get task information. Check ECS console for details."
+          fi
