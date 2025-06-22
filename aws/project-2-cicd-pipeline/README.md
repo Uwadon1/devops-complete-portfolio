@@ -286,4 +286,6 @@ aws logs delete-log-group --log-group-name /ecs/webapp-cicd-task
 * Create staging/prod separation
 * Move to **Project 3: Kubernetes Orchestration**
 
+ lets see
+ 
 🎉 **Congratulations! You built a full AWS DevOps pipeline!**
