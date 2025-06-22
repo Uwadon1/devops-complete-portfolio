@@ -35,4 +35,4 @@ app.get('/api/info', (req, res) => {
 app.listen(PORT, () => {
   console.log(`App running on port ${PORT}`);
   console.log(`Environment: ${process.env.ENVIRONMENT || 'development'}`);
-});
+}); 

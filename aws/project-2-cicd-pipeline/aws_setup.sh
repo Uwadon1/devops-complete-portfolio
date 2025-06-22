@@ -8,7 +8,7 @@ CLUSTER_NAME="webapp-cicd-cluster"
 SERVICE_NAME="webapp-cicd-service"
 TASK_FAMILY="webapp-cicd-task"
 ECR_REPOSITORY="my-webapp"
-AWS_REGION="us-east-1"
+AWS_REGION="us-west-2"
 GITHUB_USER_NAME="github-actions-user"
 
 echo "=========================================="
@@ -142,14 +142,15 @@ fi
 echo "📊 Creating CloudWatch log group..."
 LOG_GROUP_NAME="/ecs/$TASK_FAMILY"
 
-if aws logs describe-log-groups --log-group-name-prefix $LOG_GROUP_NAME --query 'logGroups[0].logGroupName' --output text >/dev/null 2>&1; then
+if aws logs describe-log-groups --log-group-name-prefix "$LOG_GROUP_NAME" --query 'logGroups[0].logGroupName' --output text >/dev/null 2>&1; then
     echo "✅ CloudWatch log group already exists"
 else
-    aws logs create-log-group \
-        --log-group-name $LOG_GROUP_NAME \
-        --region $AWS_REGION
+    MSYS_NO_PATHCONV=1 aws logs create-log-group \
+        --log-group-name "$LOG_GROUP_NAME" \
+        --region "$AWS_REGION"
     echo "✅ CloudWatch log group created"
 fi
+
 
 # 7. Create initial task definition with placeholder image
 echo "📋 Creating initial task definition..."
