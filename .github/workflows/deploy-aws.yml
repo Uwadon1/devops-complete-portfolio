@@ -48,7 +48,8 @@ jobs:
         run: |
           docker build -t test-build .
           echo "Docker build successful!"
-
+  
+  
   deploy:
     name: Deploy to AWS ECS
     runs-on: ubuntu-latest
