@@ -10,6 +10,9 @@ TASK_FAMILY="webapp-cicd-task"
 ECR_REPOSITORY="my-webapp"
 AWS_REGION="us-west-2"
 GITHUB_USER_NAME="github-actions-user"
+SECURITY_GROUP_NAME="webapp-cicd-sg"
+LOG_GROUP_NAME="/ecs/$TASK_FAMILY"
+EXECUTION_ROLE_NAME="ecsTaskExecutionRole-$CLUSTER_NAME"
 
 echo "=========================================="
 echo "Setting up AWS infrastructure for CI/CD"
@@ -30,229 +33,189 @@ echo "✅ AWS CLI configured"
 
 # 1. Create ECR Repository
 echo "📦 Creating ECR repository..."
-if aws ecr describe-repositories --repository-names $ECR_REPOSITORY --region $AWS_REGION >/dev/null 2>&1; then
+if aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" --region "$AWS_REGION" >/dev/null 2>&1; then
     echo "✅ ECR repository already exists"
 else
     aws ecr create-repository \
-        --repository-name $ECR_REPOSITORY \
-        --region $AWS_REGION \
+        --repository-name "$ECR_REPOSITORY" \
+        --region "$AWS_REGION" \
         --image-scanning-configuration scanOnPush=true
     echo "✅ ECR repository created"
 fi
 
-# Get ECR repository URI
 ECR_URI=$(aws ecr describe-repositories \
-    --repository-names $ECR_REPOSITORY \
-    --region $AWS_REGION \
+    --repository-names "$ECR_REPOSITORY" \
+    --region "$AWS_REGION" \
     --query 'repositories[0].repositoryUri' \
     --output text)
 
 echo "✅ ECR URI: $ECR_URI"
 
-# 2. Create IAM role for ECS task execution
-echo "🔐 Creating ECS execution role..."
-EXECUTION_ROLE_NAME="ecsTaskExecutionRole-$CLUSTER_NAME"
-
-if aws iam get-role --role-name $EXECUTION_ROLE_NAME >/dev/null 2>&1; then
-    echo "✅ ECS execution role already exists"
+# 2. ECS Task Execution Role
+echo "🔐 Setting up ECS execution role..."
+if aws iam get-role --role-name "$EXECUTION_ROLE_NAME" >/dev/null 2>&1; then
+    echo "✅ Execution role exists"
 else
     aws iam create-role \
-        --role-name $EXECUTION_ROLE_NAME \
+        --role-name "$EXECUTION_ROLE_NAME" \
         --assume-role-policy-document '{
             "Version": "2012-10-17",
-            "Statement": [
-                {
-                    "Effect": "Allow",
-                    "Principal": {
-                        "Service": "ecs-tasks.amazonaws.com"
-                    },
-                    "Action": "sts:AssumeRole"
-                }
-            ]
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": {"Service": "ecs-tasks.amazonaws.com"},
+                "Action": "sts:AssumeRole"
+            }]
         }'
-
-    aws iam attach-role-policy \
-        --role-name $EXECUTION_ROLE_NAME \
-        --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
-    
-    echo "✅ ECS execution role created"
+    echo "✅ Execution role created"
 fi
 
-# Get execution role ARN
+# Attach policy if not already attached
+POLICIES_ATTACHED=$(aws iam list-attached-role-policies --role-name "$EXECUTION_ROLE_NAME" --query "AttachedPolicies[?PolicyArn=='arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy']")
+if [ -z "$POLICIES_ATTACHED" ]; then
+    aws iam attach-role-policy \
+        --role-name "$EXECUTION_ROLE_NAME" \
+        --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+    echo "✅ Policy attached"
+else
+    echo "✅ Policy already attached to existing role"
+fi
+
 EXECUTION_ROLE_ARN=$(aws iam get-role \
-    --role-name $EXECUTION_ROLE_NAME \
-    --query 'Role.Arn' \
-    --output text)
+    --role-name "$EXECUTION_ROLE_NAME" \
+    --query 'Role.Arn' --output text)
 
 # 3. Create ECS cluster
 echo "🏗️ Creating ECS cluster..."
-
-CLUSTER_STATUS=$(aws ecs describe-clusters \
-  --clusters "$CLUSTER_NAME" \
-  --region "$AWS_REGION" \
-  --query "clusters[0].status" \
-  --output text 2>/dev/null)
-
+CLUSTER_STATUS=$(aws ecs describe-clusters --clusters "$CLUSTER_NAME" --region "$AWS_REGION" --query "clusters[0].status" --output text 2>/dev/null)
 if [ "$CLUSTER_STATUS" == "ACTIVE" ]; then
-    echo "✅ ECS cluster already exists and is ACTIVE"
+    echo "✅ ECS cluster is ACTIVE"
 elif [ "$CLUSTER_STATUS" == "INACTIVE" ]; then
-    echo "⚠️ ECS cluster exists but is INACTIVE. Deleting and recreating..."
+    echo "♻️ Cluster is INACTIVE. Deleting and recreating..."
     aws ecs delete-cluster --cluster "$CLUSTER_NAME" --region "$AWS_REGION"
     aws ecs create-cluster --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION"
     echo "✅ ECS cluster recreated"
 else
-    echo "🆕 ECS cluster not found. Creating..."
     aws ecs create-cluster --cluster-name "$CLUSTER_NAME" --region "$AWS_REGION"
     echo "✅ ECS cluster created"
 fi
 
-
-# 4. Get VPC and subnet information
-echo "🌐 Getting VPC information..."
-DEFAULT_VPC=$(aws ec2 describe-vpcs \
-    --filters "Name=is-default,Values=true" \
-    --query 'Vpcs[0].VpcId' \
-    --output text)
-
-SUBNETS=$(aws ec2 describe-subnets \
-    --filters "Name=vpc-id,Values=$DEFAULT_VPC" \
-    --query 'Subnets[*].SubnetId' \
-    --output text | tr '\t' ',')
+# 4. VPC and subnet info
+echo "🌐 Getting network configuration..."
+DEFAULT_VPC=$(aws ec2 describe-vpcs --filters "Name=is-default,Values=true" --query 'Vpcs[0].VpcId' --output text)
+SUBNETS=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$DEFAULT_VPC" --query 'Subnets[*].SubnetId' --output text | tr '\t' ',')
 
 echo "✅ VPC: $DEFAULT_VPC"
 echo "✅ Subnets: $SUBNETS"
 
-# 5. Create security group
+# 5. Create Security Group
 echo "🛡️ Creating security group..."
-SECURITY_GROUP_NAME="webapp-cicd-sg"
+SG_EXISTS=$(aws ec2 describe-security-groups --filters "Name=group-name,Values=$SECURITY_GROUP_NAME" --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null)
 
-if aws ec2 describe-security-groups --filters "Name=group-name,Values=$SECURITY_GROUP_NAME" --query 'SecurityGroups[0].GroupId' --output text >/dev/null 2>&1; then
-    SECURITY_GROUP_ID=$(aws ec2 describe-security-groups \
-        --filters "Name=group-name,Values=$SECURITY_GROUP_NAME" \
-        --query 'SecurityGroups[0].GroupId' \
-        --output text)
-    echo "✅ Security group already exists: $SECURITY_GROUP_ID"
-else
+if [[ "$SG_EXISTS" == "None" || -z "$SG_EXISTS" ]]; then
     SECURITY_GROUP_ID=$(aws ec2 create-security-group \
-        --group-name $SECURITY_GROUP_NAME \
-        --description "Security group for webapp CI/CD" \
-        --vpc-id $DEFAULT_VPC \
-        --query 'GroupId' \
-        --output text)
-
-    # Add inbound rule for port 3001
+        --group-name "$SECURITY_GROUP_NAME" \
+        --description "Webapp CI/CD SG" \
+        --vpc-id "$DEFAULT_VPC" \
+        --query 'GroupId' --output text)
     aws ec2 authorize-security-group-ingress \
-        --group-id $SECURITY_GROUP_ID \
+        --group-id "$SECURITY_GROUP_ID" \
         --protocol tcp \
         --port 3001 \
         --cidr 0.0.0.0/0
-
     echo "✅ Security group created: $SECURITY_GROUP_ID"
+else
+    SECURITY_GROUP_ID="$SG_EXISTS"
+    echo "✅ Security group exists: $SECURITY_GROUP_ID"
 fi
 
-# 6. Create CloudWatch log group
+# 6. CloudWatch log group
 echo "📊 Creating CloudWatch log group..."
-LOG_GROUP_NAME="/ecs/$TASK_FAMILY"
-
-if aws logs describe-log-groups --log-group-name-prefix "$LOG_GROUP_NAME" --query 'logGroups[0].logGroupName' --output text >/dev/null 2>&1; then
-    echo "✅ CloudWatch log group already exists"
+if MSYS_NO_PATHCONV=1 aws logs describe-log-groups --log-group-name-prefix "$LOG_GROUP_NAME" --region "$AWS_REGION" \
+  --query "logGroups[?logGroupName=='$LOG_GROUP_NAME']" | grep -q "$LOG_GROUP_NAME"; then
+    echo "✅ Log group already exists"
 else
-    MSYS_NO_PATHCONV=1 aws logs create-log-group \
-        --log-group-name "$LOG_GROUP_NAME" \
-        --region "$AWS_REGION"
+    MSYS_NO_PATHCONV=1 aws logs create-log-group --log-group-name "$LOG_GROUP_NAME" --region "$AWS_REGION"
     echo "✅ CloudWatch log group created"
 fi
 
-
-# 7. Create initial task definition with placeholder image
+# 7. Task Definition
 echo "📋 Creating initial task definition..."
 aws ecs register-task-definition \
-    --family $TASK_FAMILY \
+    --family "$TASK_FAMILY" \
     --network-mode awsvpc \
     --requires-compatibilities FARGATE \
     --cpu 256 \
     --memory 512 \
-    --execution-role-arn $EXECUTION_ROLE_ARN \
-    --container-definitions '[
-        {
-            "name": "webapp",
-            "image": "nginx:latest",
-            "portMappings": [
-                {
-                    "containerPort": 3001,
-                    "protocol": "tcp"
-                }
-            ],
-            "environment": [
-                {
-                    "name": "ENVIRONMENT",
-                    "value": "production"
-                }
-            ],
-            "logConfiguration": {
-                "logDriver": "awslogs",
-                "options": {
-                    "awslogs-group": "'$LOG_GROUP_NAME'",
-                    "awslogs-region": "'$AWS_REGION'",
-                    "awslogs-stream-prefix": "ecs"
-                }
+    --execution-role-arn "$EXECUTION_ROLE_ARN" \
+    --container-definitions "[{
+        \"name\": \"webapp\",
+        \"image\": \"nginx:latest\",
+        \"portMappings\": [{
+            \"containerPort\": 3001,
+            \"protocol\": \"tcp\"
+        }],
+        \"environment\": [{
+            \"name\": \"ENVIRONMENT\",
+            \"value\": \"production\"
+        }],
+        \"logConfiguration\": {
+            \"logDriver\": \"awslogs\",
+            \"options\": {
+                \"awslogs-group\": \"$LOG_GROUP_NAME\",
+                \"awslogs-region\": \"$AWS_REGION\",
+                \"awslogs-stream-prefix\": \"ecs\"
             }
         }
-    ]' \
-    --region $AWS_REGION >/dev/null
+    }]" \
+    --region "$AWS_REGION" >/dev/null
 
 echo "✅ Initial task definition created"
 
-# 8. Create ECS service
+# 8. ECS Service
 echo "🚀 Creating ECS service..."
-if aws ecs describe-services --cluster $CLUSTER_NAME --services $SERVICE_NAME --region $AWS_REGION >/dev/null 2>&1; then
+SERVICE_STATUS=$(aws ecs describe-services --cluster "$CLUSTER_NAME" --services "$SERVICE_NAME" --region "$AWS_REGION" --query 'services[0].status' --output text 2>/dev/null)
+if [ "$SERVICE_STATUS" == "ACTIVE" ]; then
     echo "✅ ECS service already exists"
 else
     aws ecs create-service \
-        --cluster $CLUSTER_NAME \
-        --service-name $SERVICE_NAME \
-        --task-definition $TASK_FAMILY \
+        --cluster "$CLUSTER_NAME" \
+        --service-name "$SERVICE_NAME" \
+        --task-definition "$TASK_FAMILY" \
         --desired-count 1 \
         --launch-type FARGATE \
         --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SECURITY_GROUP_ID],assignPublicIp=ENABLED}" \
-        --region $AWS_REGION >/dev/null
+        --region "$AWS_REGION"
     echo "✅ ECS service created"
 fi
 
-# 9. Create IAM user for GitHub Actions
+# 9. IAM user for GitHub Actions
 echo "👤 Creating GitHub Actions IAM user..."
-if aws iam get-user --user-name $GITHUB_USER_NAME >/dev/null 2>&1; then
+if aws iam get-user --user-name "$GITHUB_USER_NAME" >/dev/null 2>&1; then
     echo "✅ GitHub Actions user already exists"
-    echo "ℹ️ You may need to create new access keys"
 else
-    aws iam create-user --user-name $GITHUB_USER_NAME
-    
-    # Attach policies for GitHub Actions
+    aws iam create-user --user-name "$GITHUB_USER_NAME"
     aws iam attach-user-policy \
-        --user-name $GITHUB_USER_NAME \
+        --user-name "$GITHUB_USER_NAME" \
         --policy-arn arn:aws:iam::aws:policy/AmazonECS_FullAccess
-    
     aws iam attach-user-policy \
-        --user-name $GITHUB_USER_NAME \
+        --user-name "$GITHUB_USER_NAME" \
         --policy-arn arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryFullAccess
-    
-    echo "✅ GitHub Actions user created with ECS and ECR permissions"
+    echo "✅ GitHub Actions user created"
 fi
 
-# Create access keys for GitHub Actions
+# 10. Generate access keys
 echo "🔑 Creating access keys for GitHub Actions..."
-ACCESS_KEY_OUTPUT=$(aws iam create-access-key --user-name $GITHUB_USER_NAME 2>/dev/null || echo "failed")
-
-if [ "$ACCESS_KEY_OUTPUT" = "failed" ]; then
-    echo "⚠️ Could not create new access keys (user may already have 2 keys)"
-    echo "ℹ️ You may need to delete old keys first or use existing ones"
+ACCESS_KEYS=$(aws iam create-access-key --user-name "$GITHUB_USER_NAME" 2>/dev/null || echo "failed")
+if [ "$ACCESS_KEYS" = "failed" ]; then
+    echo "⚠️ Could not create new access keys (maybe 2 keys already exist)"
     AWS_ACCESS_KEY_ID="[Use existing or create new access key]"
     AWS_SECRET_ACCESS_KEY="[Use existing or create new secret key]"
 else
-    AWS_ACCESS_KEY_ID=$(echo $ACCESS_KEY_OUTPUT | jq -r '.AccessKey.AccessKeyId')
-    AWS_SECRET_ACCESS_KEY=$(echo $ACCESS_KEY_OUTPUT | jq -r '.AccessKey.SecretAccessKey')
+    AWS_ACCESS_KEY_ID=$(echo "$ACCESS_KEYS" | jq -r '.AccessKey.AccessKeyId')
+    AWS_SECRET_ACCESS_KEY=$(echo "$ACCESS_KEYS" | jq -r '.AccessKey.SecretAccessKey')
 fi
 
+# Output GitHub secrets
 echo ""
 echo "=========================================="
 echo "🎉 SETUP COMPLETE!"
@@ -273,7 +236,6 @@ echo "🔧 Next Steps:"
 echo "1. Add the above secrets to your GitHub repository"
 echo "2. Push your code to trigger the first deployment"
 echo "3. Watch the GitHub Actions workflow"
-echo "4. Get your app URL from the workflow output"
 echo ""
 echo "🧹 To clean up later:"
 echo "./cleanup-aws.sh"
