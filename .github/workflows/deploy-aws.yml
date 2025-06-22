@@ -102,14 +102,15 @@ jobs:
         ls -l
         cat task-definition.json || echo "task-definition.json not found"
 
+        - name: Fill in the new image ID in the Amazon ECS task definition
+  id: task-def
+  uses: aws-actions/amazon-ecs-render-task-definition@v1
+  with:
+    task-definition: aws/project-2-cicd-pipeline/task-definition.json
+    container-name: webapp
+    image: ${{ steps.build-image.outputs.image }}
 
-    - name: Fill in the new image ID in the Amazon ECS task definition
-      id: task-def
-      uses: aws-actions/amazon-ecs-render-task-definition@v1
-      with:
-        task-definition: task-definition.json   # File is in current working directory
-        container-name: webapp                  # Ensure this matches your ECS container name
-        image: ${{ steps.build-image.outputs.image }}
+    
 
     - name: Deploy Amazon ECS task definition
       uses: aws-actions/amazon-ecs-deploy-task-definition@v1
