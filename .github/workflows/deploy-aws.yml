@@ -1,14 +1,14 @@
 name: Deploy to AWS ECS
-    
+
 on:
   push:
     branches: [main]
     paths:
-      - 'project-2-cicd-pipeline/**'  # ✅ Fix: match actual folder
+      - 'aws/project-2-cicd-pipeline/**'  # ✅ this matches your actual directory
   pull_request:
     branches: [main]
     paths:
-      - 'project-2-cicd-pipeline/**'
+      - 'aws/project-2-cicd-pipeline/**'
   workflow_dispatch:
 
   
